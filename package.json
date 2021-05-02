@@ -1,0 +1,35 @@
+{
+  "name": "dngateway",
+  "version": "0.0.1",
+  "description": "A domain name based express.js (NodeJS) gateway for exposing backend services",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LamaAni/dngateway.git"
+  },
+  "keywords": [
+    "DNS",
+    "Gateway",
+    "LoadBalancer",
+    "Services",
+    "Kubernetes",
+    "Expose",
+    "Backend",
+    "express",
+    "expressjs",
+    "proxy"
+  ],
+  "author": "Zav Shotan",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/LamaAni/dngateway/issues"
+  },
+  "homepage": "https://github.com/LamaAni/dngateway#readme",
+  "dependencies": {
+    "express": "^4.17.1"
+  },
+  "devDependencies": {
+    "@lamaani/infer": "github:lamaani/infer",
+    "@lamaani/stratis": "github:lamaani/stratis"
+  }
+}
