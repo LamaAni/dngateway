@@ -1,9 +1,10 @@
-const http = require("http");
-const https = require("https");
-const net = require("net");
-const { assert } = require("console");
-const { Request, Response, NextFunction } = require("express/index");
-const events = require("events");
+const http = require('http')
+const https = require('https')
+const dns = require('dns')
+const net = require('net')
+const { assert } = require('console')
+const { Request, Response, NextFunction } = require('express/index')
+const events = require('events')
 
 /**
  * @param {string} target_path
@@ -11,9 +12,9 @@ const events = require("events");
  */
 function encode_hostname(target_path) {
   return target_path.replace(/[^\w.-]/g, (str) => {
-    const char_num = str.charCodeAt(0);
-    return `.e${char_num.toString().padStart(3, "0")}.`;
-  });
+    const char_num = str.charCodeAt(0)
+    return `.e${char_num.toString().padStart(3, '0')}.`
+  })
 }
 
 /**
@@ -22,35 +23,49 @@ function encode_hostname(target_path) {
  */
 function decode_hostname(hostname) {
   return hostname.replace(/[.]e[0-9]{3}[.]/g, (str) => {
-    const char_num = parseInt(str.substr(2, 3));
-    return String.fromCharCode([parseInt(char_num)]);
-  });
+    const char_num = parseInt(str.substr(2, 3))
+    return String.fromCharCode([parseInt(char_num)])
+  })
+}
+
+function map_dns_status_to_http_code(dns_error_Code) {
+  switch (dns_error_Code) {
+    case dns.NOTFOUND:
+      return 404
+      break
+    case dns.REFUSED:
+    case dns.CANCELLED:
+    case dns.CONNREFUSED:
+      return 403
+    default:
+      return 500
+  }
 }
 
 class GatewayRequestInfo {
   constructor() {
     /** @type {boolean} If true, the gateway should intercept this request*/
-    this.is_gateway_intercept = false;
+    this.is_gateway_intercept = false
 
     /** @type {boolean} If true, this is a gateway host (encoded in domain) request*/
-    this.is_gateway_host = false;
+    this.is_gateway_host = false
 
     /** @type {boolean} If true, this is a websocket request*/
-    this.is_websocket_request = false;
+    this.is_websocket_request = false
 
     /** @type {string} An identifier for the target. Generated via a general call.*/
-    this.target_id = null;
+    this.target_id = null
 
     /** @type {string} The method to use when calling the target */
-    this.target_method = null;
+    this.target_method = null
 
     /** @type {URL} The target url to call on. */
-    this.target_url = null;
+    this.target_url = null
 
     /**
      * @type {Error}
      */
-    this.gateway_intercept_error = null;
+    this.gateway_intercept_error = null
   }
 }
 
@@ -74,7 +89,7 @@ class GatewayRequestParser {
       parse_url_from_route,
       parse_protocol,
       parse_method,
-    };
+    }
   }
 
   /**
@@ -86,11 +101,11 @@ class GatewayRequestParser {
    */
   parse_url_from_id(gateway, req, target_id) {
     if (this.invoke_methods.parse_url_from_id)
-      return this.invoke_methods.parse_url_from_id(gateway, req, target_id);
+      return this.invoke_methods.parse_url_from_id(gateway, req, target_id)
     // general case the id is the remote host + port
-    const parsed_from_id = req.protocol + "://" + target_id + req.originalUrl;
-    const url = new URL(parsed_from_id);
-    return url;
+    const parsed_from_id = req.protocol + '://' + target_id + req.originalUrl
+    const url = new URL(parsed_from_id)
+    return url
   }
 
   /**
@@ -101,11 +116,11 @@ class GatewayRequestParser {
    */
   parse_url_from_route(gateway, req) {
     if (this.invoke_methods.parse_url_from_route)
-      return this.invoke_methods.parse_url_from_route(gateway, req);
+      return this.invoke_methods.parse_url_from_route(gateway, req)
 
-    const request_path = req.originalUrl.substr((req.baseUrl || "").length);
-    const url = new URL(req.protocol + "://" + request_path);
-    return url;
+    const request_path = req.originalUrl.substr((req.baseUrl || '').length)
+    const url = new URL(req.protocol + '://' + request_path)
+    return url
   }
 
   /**
@@ -115,17 +130,16 @@ class GatewayRequestParser {
    */
   parse_protocol(gateway, req) {
     if (this.invoke_methods.parse_protocol)
-      return this.invoke_methods.parse_protocol(gateway, req);
+      return this.invoke_methods.parse_protocol(gateway, req)
 
-    let target_protocol = req.protocol;
-    if (gateway.force_protocol != null)
-      target_protocol = gateway.force_protocol;
+    let target_protocol = req.protocol
+    if (gateway.force_protocol != null) target_protocol = gateway.force_protocol
     // if (this.is_websocket_request && gateway.force_websocket_protocol)
     //     target_protocol = gateway.force_http || req.protocol != 'https' ? 'ws' : 'wss'
-    if (gateway.force_http && target_protocol == "https")
-      target_protocol = "http";
+    if (gateway.force_http && target_protocol == 'https')
+      target_protocol = 'http'
 
-    return target_protocol;
+    return target_protocol
   }
 
   /**
@@ -135,8 +149,8 @@ class GatewayRequestParser {
    */
   parse_method(gateway, req) {
     if (this.invoke_methods.parse_method)
-      return this.invoke_methods.parse_method(gateway, req);
-    return req.method;
+      return this.invoke_methods.parse_method(gateway, req)
+    return req.method
   }
 
   /**
@@ -145,19 +159,19 @@ class GatewayRequestParser {
    * @returns {GatewayRequestInfo} The gateway request info
    */
   parse_request(gateway, req) {
-    const info = new GatewayRequestInfo();
-    const req_host = req.get("host");
+    const info = new GatewayRequestInfo()
+    const req_host = req.get('host')
     const gateway_domain_postfix =
-      gateway.gateway_subdomain + "." + gateway.get_gateway_host(req);
+      gateway.gateway_subdomain + '.' + gateway.get_gateway_host(req)
 
     info.is_websocket_request =
-      req.headers["sec-websocket-protocol"] != null ||
-      req.headers.upgrade == "websocket";
+      req.headers['sec-websocket-protocol'] != null ||
+      req.headers.upgrade == 'websocket'
 
-    info.is_gateway_host = req_host.endsWith(gateway_domain_postfix);
+    info.is_gateway_host = req_host.endsWith(gateway_domain_postfix)
 
     // by default intercept.
-    info.is_gateway_intercept = true;
+    info.is_gateway_intercept = true
 
     if (info.is_gateway_intercept) {
       try {
@@ -167,46 +181,42 @@ class GatewayRequestParser {
               0,
               req_host.length - gateway_domain_postfix.length - 1
             )
-          );
-          info.target_url = this.parse_url_from_id(
-            gateway,
-            req,
-            info.target_id
-          );
-        } else info.target_url = this.parse_url_from_route(gateway, req);
+          )
+          info.target_url = this.parse_url_from_id(gateway, req, info.target_id)
+        } else info.target_url = this.parse_url_from_route(gateway, req)
 
         if (info.target_url == null) {
-          info.is_gateway_intercept = false;
+          info.is_gateway_intercept = false
         } else {
           info.target_url =
             info.target_url instanceof URL
               ? info.target_url
-              : new URL(info.target_url);
-          info.target_id = info.target_id || info.target_url.host;
+              : new URL(info.target_url)
+          info.target_id = info.target_id || info.target_url.host
 
           assert(
             info.target_url != null,
-            "Target url not defined or target url not resolved"
-          );
+            'Target url not defined or target url not resolved'
+          )
 
-          info.target_method = this.parse_method(gateway, req);
-          info.target_url.protocol = this.parse_protocol(gateway, req);
+          info.target_method = this.parse_method(gateway, req)
+          info.target_url.protocol = this.parse_protocol(gateway, req)
 
           if (info.is_websocket_request) {
             info.target_url.pathname = info.target_url.pathname.replace(
               /\/[.]websocket$/,
-              ""
-            );
+              ''
+            )
           }
         }
       } catch (err) {
-        info.gateway_intercept_error = err;
-        gateway.emit("log", "ERROR", "Gateway failed to parse");
-        gateway.emit("error", err);
+        info.gateway_intercept_error = err
+        gateway.emit('log', 'ERROR', 'Gateway failed to parse')
+        gateway.emit('error', err)
       }
     }
 
-    return info;
+    return info
   }
 }
 
@@ -238,42 +248,43 @@ class Gateway extends events.EventEmitter {
     force_protocol = null,
     force_http = true,
     force_websocket_protocol = true,
-    gateway_subdomain = "gateway-proxy",
+    gateway_subdomain = 'gateway-proxy',
     socket_ports = [22],
     logger = null,
   } = {}) {
-    super();
+    super()
 
-    this.gateway_host = gateway_host;
-    this.force_protocol = force_protocol;
-    this.force_http = force_http;
-    this.force_websocket_protocol = force_websocket_protocol;
-    this.gateway_subdomain = gateway_subdomain;
-    this.socket_ports = socket_ports;
+    this.gateway_host = gateway_host
+    this.force_protocol = force_protocol
+    this.force_http = force_http
+    this.force_websocket_protocol = force_websocket_protocol
+    this.gateway_subdomain = gateway_subdomain
+    this.socket_ports = socket_ports
 
     /**@type {GatewayEventListenRegister} */
-    this.on;
+    this.on
     /**@type {GatewayEventListenRegister} */
-    this.once;
+    this.once
 
     /**@type {GatewayEventEmitter} */
-    this.emit;
+    this.emit
 
     if (logger) {
-      this.on("log", (level, ...args) => {
-        logger[level.toLowerCase()](...args);
-      });
+      this.on('log', (level, ...args) => {
+        logger[level.toLowerCase()](...args)
+      })
     }
 
-    this.on("error", (err) => {
-      if (logger && logger.error) logger.error(err);
-    });
+    this.on('error', (err) => {
+      if (logger && logger.error) logger.error(err)
+    })
   }
 
   /**
    * Create a proxy request for the info.
    * @param {Request} req
    * @param {Response} rsp
+   * @param {NextFunction} next
    * @param {GatewayRequestInfo} info
    * @param {(rsp:http.IncomingMessage)=>{}} handle_response
    * @returns {http.ClientRequest}
@@ -281,6 +292,7 @@ class Gateway extends events.EventEmitter {
   create_proxy_request(
     req,
     rsp,
+    next,
     info,
     handle_response = null,
     headers = null,
@@ -295,145 +307,156 @@ class Gateway extends events.EventEmitter {
       hostname: info.target_url.hostname,
       port: info.target_url.port,
       path: info.target_url.pathname + info.target_url.search,
-    };
+    }
 
     options.headers = {
       ...(override_headers ? {} : req.headers),
       ...(headers || {}),
-    };
-
-    let proxy_request = null;
-    switch (info.target_url.protocol) {
-      case "wss:":
-      case "https:":
-        {
-          proxy_request = https.request(options, handle_response);
-        }
-        break;
-      default:
-        {
-          proxy_request = http.request(options, handle_response);
-        }
-        break;
     }
 
-    proxy_request.on("error", (err) => {
-      this.emit("error", err);
-      this.emit("log", "ERROR", "Error while executing request");
-      rsp.sendStatus(500);
-    });
+    let proxy_request = null
+    switch (info.target_url.protocol) {
+      case 'wss:':
+      case 'https:':
+        {
+          proxy_request = https.request(options, handle_response)
+        }
+        break
+      default:
+        {
+          proxy_request = http.request(options, handle_response)
+        }
+        break
+    }
 
-    return proxy_request;
+    proxy_request.on('error', (err) => {
+      this.emit('error', err)
+
+      const status = map_dns_status_to_http_code(err.code || '[unknown]')
+
+      if (status == 500)
+        this.emit('log', 'ERROR', 'Error while executing request')
+
+      if (info.is_websocket_request) return res.sendStatus(status)
+      let err = new Error('Page Not Found')
+      err.statusCode = status
+      next(err)
+    })
+
+    return proxy_request
   }
 
   /**
    * A middleware function to execute the auth.
    * @param {Request} req
    * @param {Response} rsp
+   * @param {NextFunction} next
    * @param {GatewayRequestInfo} info
    */
-  send_proxy_request(req, rsp, info) {
+  send_proxy_request(req, rsp, next, info) {
     const proxy_request = this.create_proxy_request(
       req,
       rsp,
+      next,
       info,
       (proxy_rsp) => {
-        rsp.writeHead(proxy_rsp.statusCode, proxy_rsp.headers);
+        rsp.writeHead(proxy_rsp.statusCode, proxy_rsp.headers)
         proxy_rsp.pipe(rsp, {
           end: true,
-        });
+        })
       }
-    );
+    )
 
     req.pipe(proxy_request, {
       end: true,
-    });
+    })
   }
 
   /**
    * A middleware function to execute the auth.
    * @param {Request} req
    * @param {Response} rsp
+   * @param {NextFunction} next
    * @param {GatewayRequestInfo} info
    */
-  create_websocket_proxy(req, rsp, info) {
+  create_websocket_proxy(req, rsp, next, info) {
     try {
-      const client_socket = req.socket;
-      client_socket.setTimeout(0);
-      client_socket.setNoDelay(true);
-      client_socket.setKeepAlive(true, 0);
+      const client_socket = req.socket
+      client_socket.setTimeout(0)
+      client_socket.setNoDelay(true)
+      client_socket.setKeepAlive(true, 0)
 
-      const ws_request = this.create_proxy_request(req, rsp, info);
+      const ws_request = this.create_proxy_request(req, rsp, next, info)
 
       const create_websocket_socket_header = (...args) => {
-        let lines = [];
+        let lines = []
         for (let v of args) {
           if (Array.isArray(v)) {
-            lines = lines.concat(v);
+            lines = lines.concat(v)
           }
-          if (typeof v == "object") {
+          if (typeof v == 'object') {
             for (let key of Object.keys(v)) {
-              let ov = v[key];
+              let ov = v[key]
               if (Array.isArray(ov))
                 ov.forEach((v) => {
-                  lines.push(key + ": " + value[i]);
-                });
-              else lines.push(key + ": " + ov);
+                  lines.push(key + ': ' + value[i])
+                })
+              else lines.push(key + ': ' + ov)
             }
-          } else lines.push(v);
+          } else lines.push(v)
         }
-        return lines.join("\r\n") + "\r\n\r\n";
-      };
+        return lines.join('\r\n') + '\r\n\r\n'
+      }
 
-      ws_request.on("response", (proxy_rsp) => {
+      ws_request.on('response', (proxy_rsp) => {
         if (proxy_rsp.upgrade == true) {
-          rsp.writeHead(proxy_rsp.statusCode, proxy_rsp.headers);
-          proxy_rsp.pipe(rsp);
+          rsp.writeHead(proxy_rsp.statusCode, proxy_rsp.headers)
+          proxy_rsp.pipe(rsp)
         } else {
           this.emit(
-            "log",
-            "WARN",
+            'log',
+            'WARN',
             `Websocket proxy @ ${info.target_url} denied the websocket.`
-          );
-          rsp.send("denied");
+          )
+          rsp.send('denied')
         }
-      });
+      })
 
-      ws_request.on("upgrade", (proxy_rsp, proxy_socket, proxy_head) => {
-        proxy_socket.on("error", (err) => {
-          this.emit("error", err);
-          this.emit("log", "ERROR", "Proxy socket error");
-        });
+      ws_request.on('upgrade', (proxy_rsp, proxy_socket, proxy_head) => {
+        proxy_socket.on('error', (err) => {
+          this.emit('error', err)
+          this.emit('log', 'ERROR', 'Proxy socket error')
+        })
 
-        if (proxy_head && proxy_head.length) proxy_socket.unshift(proxy_head);
+        if (proxy_head && proxy_head.length) proxy_socket.unshift(proxy_head)
 
-        proxy_socket.on("close", () => {
-          client_socket.end();
-        });
+        proxy_socket.on('close', () => {
+          client_socket.end()
+        })
 
-        client_socket.on("close", () => {
-          proxy_socket.end();
-        });
+        client_socket.on('close', () => {
+          proxy_socket.end()
+        })
 
         // keep the proxy socket active.
-        proxy_socket.setKeepAlive(true, 0);
-        proxy_socket.setNoDelay(true, 0);
-        proxy_socket.setTimeout(0);
+        proxy_socket.setKeepAlive(true, 0)
+        proxy_socket.setNoDelay(true, 0)
+        proxy_socket.setTimeout(0)
 
         client_socket.write(
           create_websocket_socket_header(
-            "HTTP/1.1 101 Switching Protocols",
+            'HTTP/1.1 101 Switching Protocols',
             proxy_rsp.headers
           )
-        );
+        )
 
-        proxy_socket.pipe(client_socket).pipe(proxy_socket);
-      });
+        proxy_socket.pipe(client_socket).pipe(proxy_socket)
+      })
 
-      req.pipe(ws_request);
+      req.pipe(ws_request)
     } catch (err) {
-      this.emit("error", err);
-      this.emit("log", "ERROR", "Proxy websocket exited with error");
+      this.emit('error', err)
+      this.emit('log', 'ERROR', 'Proxy websocket exited with error')
     }
   }
 
@@ -444,41 +467,41 @@ class Gateway extends events.EventEmitter {
    * @param {GatewayRequestInfo} info
    */
   create_socket_tunnel(req, rsp, info) {
-    const client_socket = req.socket;
+    const client_socket = req.socket
     const proxy_socket = new net.Socket({
       allowHalfOpen: true,
       readable: true,
       writable: true,
-    });
+    })
 
     const handle_error = (err) => {
-      this.emit("error", err);
+      this.emit('error', err)
       try {
-        proxy_socket.end();
-        client_socket.end();
+        proxy_socket.end()
+        client_socket.end()
       } catch {}
 
-      this.emit("log", "ERROR", "Error in socket proxy");
-    };
+      this.emit('log', 'ERROR', 'Error in socket proxy')
+    }
 
-    proxy_socket.on("connect", () => {
+    proxy_socket.on('connect', () => {
       // piping
-      proxy_socket.pipe(client_socket).pipe(proxy_socket);
-      proxy_socket.on("close", () => {
-        client_socket.end();
-      });
-      client_socket.on("close", () => {
-        proxy_socket.end();
-      });
-    });
+      proxy_socket.pipe(client_socket).pipe(proxy_socket)
+      proxy_socket.on('close', () => {
+        client_socket.end()
+      })
+      client_socket.on('close', () => {
+        proxy_socket.end()
+      })
+    })
 
     proxy_socket.connect({
       port: info.target_url.port,
       host: info.target_url.host,
-    });
+    })
 
-    proxy_socket.on("error", handle_error);
-    client_socket.on("error", handle_error);
+    proxy_socket.on('error', handle_error)
+    client_socket.on('error', handle_error)
   }
 
   /**
@@ -486,17 +509,17 @@ class Gateway extends events.EventEmitter {
    * @param {Request} req
    */
   get_gateway_host(req) {
-    if (this.gateway_host != null) return this.gateway_host;
+    if (this.gateway_host != null) return this.gateway_host
 
     // auto-detect
-    const host = req.get("host");
-    const subdomain_prefix = `.${this.gateway_subdomain}.`;
-    const last_index = host.lastIndexOf(subdomain_prefix);
+    const host = req.get('host')
+    const subdomain_prefix = `.${this.gateway_subdomain}.`
+    const last_index = host.lastIndexOf(subdomain_prefix)
     if (last_index == -1) {
       // assume not a direct gateway call.
-      return host;
+      return host
     } else {
-      return host.substr(last_index + subdomain_prefix.length);
+      return host.substr(last_index + subdomain_prefix.length)
     }
   }
 
@@ -506,18 +529,18 @@ class Gateway extends events.EventEmitter {
    * @returns {string} The host redirect
    */
   get_gateway_host_redirect(req, info) {
-    const redirect_host = this.get_gateway_host(req);
+    const redirect_host = this.get_gateway_host(req)
     return (
       info.target_url.protocol +
-      "//" +
+      '//' +
       encode_hostname(info.target_id) +
-      "." +
+      '.' +
       this.gateway_subdomain +
-      "." +
+      '.' +
       redirect_host +
       info.target_url.pathname +
       info.target_url.search
-    );
+    )
   }
 
   /**
@@ -525,17 +548,17 @@ class Gateway extends events.EventEmitter {
    * @param {(req:Request, gateway:Gateway} request_filter
    */
   middleware(parser = null, request_filter = null) {
-    assert(parser != null, "Parser must not be null");
+    assert(parser != null, 'Parser must not be null')
 
     if (!(parser instanceof GatewayRequestParser)) {
       assert(
-        typeof parser == "function",
-        "the parser must be a function or of type GatewayRequestParser"
-      );
+        typeof parser == 'function',
+        'the parser must be a function or of type GatewayRequestParser'
+      )
 
       parser = new GatewayRequestParser({
         parse_url_from_route: parser,
-      });
+      })
     }
 
     /**
@@ -548,54 +571,54 @@ class Gateway extends events.EventEmitter {
       /**
        * @type {GatewayRequestInfo}
        */
-      const info = parser.parse_request(this, req);
+      const info = parser.parse_request(this, req)
 
       if (
         !info.is_gateway_host &&
         request_filter != null &&
         !request_filter(req, this)
       )
-        return next();
+        return next()
 
       // skip if not a gateway request.
-      if (!info.is_gateway_intercept) return next();
+      if (!info.is_gateway_intercept) return next()
 
       if (info.gateway_intercept_error) {
-        this.emit("log", "ERROR", "Gateway internal error");
-        rsp.sendStatus(500);
-        return;
+        this.emit('log', 'ERROR', 'Gateway internal error')
+        rsp.sendStatus(500)
+        return
       }
 
       try {
         // websocket/socket request do not require their own domain.
         if (info.is_websocket_request) {
           this.emit(
-            "log",
-            "INFO",
+            'log',
+            'INFO',
             `Starting websocket proxy ${req.originalUrl} -> ${info.target_url}`
-          );
-          this.create_websocket_proxy(req, rsp, info);
-          return;
+          )
+          this.create_websocket_proxy(req, rsp, next, info)
+          return
         }
 
         // any other web request should be redirected.
         if (!info.is_gateway_host) {
-          const redirect_path = this.get_gateway_host_redirect(req, info);
-          this.emit("log", "INFO", "Redirect: " + redirect_path);
-          rsp.redirect(redirect_path);
-          return;
+          const redirect_path = this.get_gateway_host_redirect(req, info)
+          this.emit('log', 'INFO', 'Redirect: ' + redirect_path)
+          rsp.redirect(redirect_path)
+          return
         }
 
-        this.send_proxy_request(req, rsp, info);
+        this.send_proxy_request(req, rsp, next, info)
       } catch (err) {
-        this.emit("error", err);
-        this.emit("log", "ERROR", "Error while sending request");
-        rsp.sendStatus(500);
-        return;
+        this.emit('error', err)
+        this.emit('log', 'ERROR', 'Error while sending request')
+        rsp.sendStatus(500)
+        return
       }
-    };
+    }
 
-    return run_middleware;
+    return run_middleware
   }
 }
 
@@ -604,4 +627,4 @@ module.exports = {
   encode_hostname,
   Gateway,
   GatewayRequestParser,
-};
+}
