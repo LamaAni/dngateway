@@ -350,8 +350,9 @@ class Gateway extends events.EventEmitter {
       ...(headers || {}),
     }
 
-    // reset the host.
-    options.headers.host = null
+    // reset the host if self redirect
+    if ((options.headers.host || '').endsWith(info.target_url.host))
+      options.headers.host = null
 
     let proxy_request = null
     switch (info.target_url.protocol) {
