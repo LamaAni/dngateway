@@ -63,14 +63,20 @@ class GatewayRequestInfo {
     this.target_url = null
 
     /**
+     * True if to ignore this request.
+     */
+    this.move_to_next = false
+
+    /**
      * @type {Error}
      */
     this.gateway_intercept_error = null
   }
 }
 
-class GatewayRequestParser {
+class GatewayBackendParser {
   /**
+   * Parses the backend url request from the current path.
    * @param {{
    * parse_url_from_id: (gateway:Gateway, req: Request, target_id)=>string,
    * parse_url_from_route: (gateway:Gateway, req: Request)=>string,
@@ -156,9 +162,10 @@ class GatewayRequestParser {
   /**
    * @param {Gateway} gateway
    * @param {Request} req
+   * @param {(req: Request)=>boolean} filter
    * @returns {GatewayRequestInfo} The gateway request info
    */
-  parse_request(gateway, req) {
+  parse_request(gateway, req, filter = null) {
     const info = new GatewayRequestInfo()
     const req_host = req.get('host')
     const gateway_domain_postfix =
@@ -170,8 +177,11 @@ class GatewayRequestParser {
 
     info.is_gateway_host = req_host.endsWith(gateway_domain_postfix)
 
-    // by default intercept.
-    info.is_gateway_intercept = true
+    if (filter && !info.is_gateway_host) info.move_to_next = filter(req) != true
+    else info.move_to_next = false
+
+    // try intercept if not ignored by filter.
+    info.is_gateway_intercept = !info.move_to_next
 
     if (info.is_gateway_intercept) {
       try {
@@ -279,19 +289,45 @@ class Gateway extends events.EventEmitter {
       if (logger && logger.error) logger.error(err)
     })
   }
+  /**
+   * Create a proxy request for the info.
+   * @param {Error} err
+   * @param {Request} req
+   * @param {Response} res
+   * @param {NextFunction} next
+   * @param {GatewayRequestInfo} info
+   */
+  _handle_proxy_request_error(err, req, res, next, info) {
+    const originalCode = err.code || '[unknown]'
+    const status = map_dns_status_to_http_code(originalCode)
+
+    if (status == 500)
+      this.emit(
+        'log',
+        'ERROR',
+        `Backend service error while executing request (${status}): ` +
+          err.message
+      )
+
+    if (info.is_websocket_request) return res.sendStatus(status)
+    err.code = status
+    err.statusCode = status
+    err.originalCode = originalCode
+    next(err)
+  }
 
   /**
    * Create a proxy request for the info.
    * @param {Request} req
-   * @param {Response} rsp
+   * @param {Response} res
    * @param {NextFunction} next
    * @param {GatewayRequestInfo} info
-   * @param {(rsp:http.IncomingMessage)=>{}} handle_response
+   * @param {(res:http.IncomingMessage)=>{}} handle_response
    * @returns {http.ClientRequest}
    */
   create_proxy_request(
     req,
-    rsp,
+    res,
     next,
     info,
     handle_response = null,
@@ -314,6 +350,9 @@ class Gateway extends events.EventEmitter {
       ...(headers || {}),
     }
 
+    // reset the host.
+    options.headers.host = null
+
     let proxy_request = null
     switch (info.target_url.protocol) {
       case 'wss:':
@@ -331,16 +370,7 @@ class Gateway extends events.EventEmitter {
 
     proxy_request.on('error', (err) => {
       this.emit('error', err)
-
-      const status = map_dns_status_to_http_code(err.code || '[unknown]')
-
-      if (status == 500)
-        this.emit('log', 'ERROR', 'Error while executing request')
-
-      if (info.is_websocket_request) return res.sendStatus(status)
-      let err = new Error('Page Not Found')
-      err.statusCode = status
-      next(err)
+      this._handle_proxy_request_error(err, req, res, next, info)
     })
 
     return proxy_request
@@ -349,19 +379,19 @@ class Gateway extends events.EventEmitter {
   /**
    * A middleware function to execute the auth.
    * @param {Request} req
-   * @param {Response} rsp
+   * @param {Response} res
    * @param {NextFunction} next
    * @param {GatewayRequestInfo} info
    */
-  send_proxy_request(req, rsp, next, info) {
+  send_proxy_request(req, res, next, info) {
     const proxy_request = this.create_proxy_request(
       req,
-      rsp,
+      res,
       next,
       info,
       (proxy_rsp) => {
-        rsp.writeHead(proxy_rsp.statusCode, proxy_rsp.headers)
-        proxy_rsp.pipe(rsp, {
+        res.writeHead(proxy_rsp.statusCode, proxy_rsp.headers)
+        proxy_rsp.pipe(res, {
           end: true,
         })
       }
@@ -375,18 +405,18 @@ class Gateway extends events.EventEmitter {
   /**
    * A middleware function to execute the auth.
    * @param {Request} req
-   * @param {Response} rsp
+   * @param {Response} res
    * @param {NextFunction} next
    * @param {GatewayRequestInfo} info
    */
-  create_websocket_proxy(req, rsp, next, info) {
+  create_websocket_proxy(req, res, next, info) {
     try {
       const client_socket = req.socket
       client_socket.setTimeout(0)
       client_socket.setNoDelay(true)
       client_socket.setKeepAlive(true, 0)
 
-      const ws_request = this.create_proxy_request(req, rsp, next, info)
+      const ws_request = this.create_proxy_request(req, res, next, info)
 
       const create_websocket_socket_header = (...args) => {
         let lines = []
@@ -410,15 +440,15 @@ class Gateway extends events.EventEmitter {
 
       ws_request.on('response', (proxy_rsp) => {
         if (proxy_rsp.upgrade == true) {
-          rsp.writeHead(proxy_rsp.statusCode, proxy_rsp.headers)
-          proxy_rsp.pipe(rsp)
+          res.writeHead(proxy_rsp.statusCode, proxy_rsp.headers)
+          proxy_rsp.pipe(res)
         } else {
           this.emit(
             'log',
             'WARN',
             `Websocket proxy @ ${info.target_url} denied the websocket.`
           )
-          rsp.send('denied')
+          res.send('denied')
         }
       })
 
@@ -456,17 +486,18 @@ class Gateway extends events.EventEmitter {
       req.pipe(ws_request)
     } catch (err) {
       this.emit('error', err)
-      this.emit('log', 'ERROR', 'Proxy websocket exited with error')
+      this.emit('log', 'ERROR', 'Proxy websocket setup with error')
     }
   }
 
   /**
    * A middleware function to execute the auth.
    * @param {Request} req
-   * @param {Response} rsp
+   * @param {Response} res
+   * @param {NextFunction} next
    * @param {GatewayRequestInfo} info
    */
-  create_socket_tunnel(req, rsp, info) {
+  create_socket_tunnel(req, res, next, info) {
     const client_socket = req.socket
     const proxy_socket = new net.Socket({
       allowHalfOpen: true,
@@ -475,13 +506,13 @@ class Gateway extends events.EventEmitter {
     })
 
     const handle_error = (err) => {
-      this.emit('error', err)
       try {
         proxy_socket.end()
         client_socket.end()
       } catch {}
 
-      this.emit('log', 'ERROR', 'Error in socket proxy')
+      this.emit('error', err)
+      this._handle_proxy_request_error(err, req, res, next, info)
     }
 
     proxy_socket.on('connect', () => {
@@ -544,48 +575,51 @@ class Gateway extends events.EventEmitter {
   }
 
   /**
-   * @param {GatewayRequestParser | (gateway:Gateway, req: Request)=>string} parser
-   * @param {(req:Request, gateway:Gateway} request_filter
+   * @param {GatewayBackendParser | (gateway:Gateway, req: Request)=>string} parser
+   * @returns {GatewayBackendParser}
    */
-  middleware(parser = null, request_filter = null) {
+  _validate_parser(parser) {
     assert(parser != null, 'Parser must not be null')
-
-    if (!(parser instanceof GatewayRequestParser)) {
+    if (!(parser instanceof GatewayBackendParser)) {
       assert(
         typeof parser == 'function',
         'the parser must be a function or of type GatewayRequestParser'
       )
 
-      parser = new GatewayRequestParser({
+      parser = new GatewayBackendParser({
         parse_url_from_route: parser,
       })
     }
+    return parser
+  }
+
+  /**
+   * @param {GatewayBackendParser | (gateway:Gateway, req: Request)=>string} parser
+   * @param {(req:Request, gateway:Gateway} request_filter
+   */
+  middleware(parser, request_filter = null) {
+    parser = this._validate_parser(parser)
 
     /**
      * A middleware function to execute the auth.
      * @param {Request} req
-     * @param {Response} rsp
+     * @param {Response} res
      * @param {NextFunction} next
      */
-    const run_middleware = async (req, rsp, next) => {
+    const run_middleware = async (req, res, next) => {
       /**
        * @type {GatewayRequestInfo}
        */
-      const info = parser.parse_request(this, req)
+      const info = parser.parse_request(this, req, request_filter)
 
-      if (
-        !info.is_gateway_host &&
-        request_filter != null &&
-        !request_filter(req, this)
-      )
-        return next()
+      if (info.move_to_next) return next()
 
       // skip if not a gateway request.
       if (!info.is_gateway_intercept) return next()
 
       if (info.gateway_intercept_error) {
         this.emit('log', 'ERROR', 'Gateway internal error')
-        rsp.sendStatus(500)
+        res.sendStatus(500)
         return
       }
 
@@ -597,7 +631,7 @@ class Gateway extends events.EventEmitter {
             'INFO',
             `Starting websocket proxy ${req.originalUrl} -> ${info.target_url}`
           )
-          this.create_websocket_proxy(req, rsp, next, info)
+          this.create_websocket_proxy(req, res, next, info)
           return
         }
 
@@ -605,15 +639,19 @@ class Gateway extends events.EventEmitter {
         if (!info.is_gateway_host) {
           const redirect_path = this.get_gateway_host_redirect(req, info)
           this.emit('log', 'INFO', 'Redirect: ' + redirect_path)
-          rsp.redirect(redirect_path)
+          res.redirect(redirect_path)
           return
         }
 
-        this.send_proxy_request(req, rsp, next, info)
+        this.send_proxy_request(req, res, next, info)
       } catch (err) {
         this.emit('error', err)
-        this.emit('log', 'ERROR', 'Error while sending request')
-        rsp.sendStatus(500)
+        this.emit(
+          'log',
+          'ERROR',
+          'Error while processing proxy request: ' + (err.message || 'No text')
+        )
+        res.sendStatus(500)
         return
       }
     }
@@ -626,5 +664,5 @@ module.exports = {
   decode_hostname,
   encode_hostname,
   Gateway,
-  GatewayRequestParser,
+  GatewayRequestParser: GatewayBackendParser,
 }
