@@ -56,21 +56,16 @@ class GatewayRequestInfo {
     /** @type {string} An identifier for the target. Generated via a general call.*/
     this.target_id = null
 
+    /**
+     * @type {string} The domain suffix for the gateway
+     */
+    this.gateway_domain_postfix = null
+
     /** @type {string} The method to use when calling the target */
     this.target_method = null
 
-    /** @type {URL} The target url to call on. */
-    this.target_url = null
-
-    /**
-     * True if to ignore this request.
-     */
-    this.move_to_next = false
-
-    /**
-     * @type {Error}
-     */
-    this.gateway_intercept_error = null
+    /** @type {URL} The backend url to call on.*/
+    this.backend_url = null
   }
 }
 
@@ -158,76 +153,6 @@ class GatewayBackendParser {
       return this.invoke_methods.parse_method(gateway, req)
     return req.method
   }
-
-  /**
-   * @param {Gateway} gateway
-   * @param {Request} req
-   * @param {(req: Request)=>boolean} filter
-   * @returns {GatewayRequestInfo} The gateway request info
-   */
-  parse_request(gateway, req, filter = null) {
-    const info = new GatewayRequestInfo()
-    const req_host = req.get('host')
-    const gateway_domain_postfix =
-      gateway.gateway_subdomain + '.' + gateway.get_gateway_host(req)
-
-    info.is_websocket_request =
-      req.headers['sec-websocket-protocol'] != null ||
-      req.headers.upgrade == 'websocket'
-
-    info.is_gateway_host = req_host.endsWith(gateway_domain_postfix)
-
-    if (filter && !info.is_gateway_host) info.move_to_next = filter(req) != true
-    else info.move_to_next = false
-
-    // try intercept if not ignored by filter.
-    info.is_gateway_intercept = !info.move_to_next
-
-    if (info.is_gateway_intercept) {
-      try {
-        if (info.is_gateway_host) {
-          info.target_id = decode_hostname(
-            req_host.substr(
-              0,
-              req_host.length - gateway_domain_postfix.length - 1
-            )
-          )
-          info.target_url = this.parse_url_from_id(gateway, req, info.target_id)
-        } else info.target_url = this.parse_url_from_route(gateway, req)
-
-        if (info.target_url == null) {
-          info.is_gateway_intercept = false
-        } else {
-          info.target_url =
-            info.target_url instanceof URL
-              ? info.target_url
-              : new URL(info.target_url)
-          info.target_id = info.target_id || info.target_url.host
-
-          assert(
-            info.target_url != null,
-            'Target url not defined or target url not resolved'
-          )
-
-          info.target_method = this.parse_method(gateway, req)
-          info.target_url.protocol = this.parse_protocol(gateway, req)
-
-          if (info.is_websocket_request) {
-            info.target_url.pathname = info.target_url.pathname.replace(
-              /\/[.]websocket$/,
-              ''
-            )
-          }
-        }
-      } catch (err) {
-        info.gateway_intercept_error = err
-        gateway.emit('log', 'ERROR', 'Gateway failed to parse')
-        gateway.emit('error', err)
-      }
-    }
-
-    return info
-  }
 }
 
 /**
@@ -242,6 +167,13 @@ class GatewayBackendParser {
  * @typedef {GatewayEventEmitError & GatewayEventEmitLog} GatewayEventEmitter
  */
 
+/**
+ * Defines a request filter with a backend request. The filter allows
+ * the active filtering of backend requests. parameter backend_url only exists in
+ * a subdomain gateway request.
+ * @typedef {(info:GatewayRequestInfo, req:Request, res:Response, next:NextFunction)=>boolean} GatewayRequestFilter
+ */
+
 class Gateway extends events.EventEmitter {
   /**
    * @param {{
@@ -251,6 +183,7 @@ class Gateway extends events.EventEmitter {
    * force_websocket_protocol: boolean,
    * gateway_subdomain: string,
    * logger: Console,
+   * log_errors_to_console:boolean,
    * }} param0
    */
   constructor({
@@ -261,6 +194,7 @@ class Gateway extends events.EventEmitter {
     gateway_subdomain = 'gateway-proxy',
     socket_ports = [22],
     logger = null,
+    log_errors_to_console = true,
   } = {}) {
     super()
 
@@ -287,8 +221,10 @@ class Gateway extends events.EventEmitter {
 
     this.on('error', (err) => {
       if (logger && logger.error) logger.error(err)
+      if (log_errors_to_console) console.error(err)
     })
   }
+
   /**
    * Create a proxy request for the info.
    * @param {Error} err
@@ -339,10 +275,10 @@ class Gateway extends events.EventEmitter {
      */
     const options = {
       method: info.target_method,
-      protocol: info.target_url.protocol,
-      hostname: info.target_url.hostname,
-      port: info.target_url.port,
-      path: info.target_url.pathname + info.target_url.search,
+      protocol: info.backend_url.protocol,
+      hostname: info.backend_url.hostname,
+      port: info.backend_url.port,
+      path: info.backend_url.pathname + info.backend_url.search,
     }
 
     options.headers = {
@@ -351,11 +287,11 @@ class Gateway extends events.EventEmitter {
     }
 
     // reset the host if self redirect
-    if ((options.headers.host || '').endsWith(info.target_url.host))
+    if ((options.headers.host || '').endsWith(info.backend_url.host))
       options.headers.host = null
 
     let proxy_request = null
-    switch (info.target_url.protocol) {
+    switch (info.backend_url.protocol) {
       case 'wss:':
       case 'https:':
         {
@@ -447,7 +383,7 @@ class Gateway extends events.EventEmitter {
           this.emit(
             'log',
             'WARN',
-            `Websocket proxy @ ${info.target_url} denied the websocket.`
+            `Websocket proxy @ ${info.backend_url} denied the websocket.`
           )
           res.send('denied')
         }
@@ -528,8 +464,8 @@ class Gateway extends events.EventEmitter {
     })
 
     proxy_socket.connect({
-      port: info.target_url.port,
-      host: info.target_url.host,
+      port: info.backend_url.port,
+      host: info.backend_url.host,
     })
 
     proxy_socket.on('error', handle_error)
@@ -563,15 +499,15 @@ class Gateway extends events.EventEmitter {
   get_gateway_host_redirect(req, info) {
     const redirect_host = this.get_gateway_host(req)
     return (
-      info.target_url.protocol +
+      info.backend_url.protocol +
       '//' +
       encode_hostname(info.target_id) +
       '.' +
       this.gateway_subdomain +
       '.' +
       redirect_host +
-      info.target_url.pathname +
-      info.target_url.search
+      info.backend_url.pathname +
+      info.backend_url.search
     )
   }
 
@@ -595,8 +531,77 @@ class Gateway extends events.EventEmitter {
   }
 
   /**
+   * Parse the basic request parameters.
+   * @param {GatewayBackendParser} parser
+   * @param {GatewayRequestInfo} info
+   * @param {Request} req
+   */
+  _parse_request_core_info(parser, info, req) {
+    const req_host = req.get('host')
+    info.gateway_domain_postfix =
+      this.gateway_subdomain + '.' + this.get_gateway_host(req)
+
+    info.is_gateway_host = req_host.endsWith(info.gateway_domain_postfix)
+    info.is_websocket_request =
+      req.headers['sec-websocket-protocol'] != null ||
+      req.headers.upgrade == 'websocket'
+
+    if (info.is_gateway_host) {
+      info.target_id = decode_hostname(
+        req_host.substr(
+          0,
+          req_host.length - info.gateway_domain_postfix.length - 1
+        )
+      )
+
+      info.backend_url = parser.parse_url_from_id(this, req, info.target_id)
+    }
+  }
+
+  /**
+   * Parse the basic request parameters.
+   * @param {GatewayBackendParser} parser
+   * @param {GatewayRequestInfo} info
+   * @param {Request} req
+   */
+  _parse_request_intercept_info(parser, info, req) {
+    // try intercept if not ignored by filter.
+    info.is_gateway_intercept = true
+
+    if (info.is_gateway_host != true) {
+      // case a gateway request. No id.
+      info.backend_url = parser.parse_url_from_route(this, req)
+    }
+
+    if (info.backend_url == null) {
+      info.is_gateway_intercept = false
+    } else {
+      info.backend_url =
+        info.backend_url instanceof URL
+          ? info.backend_url
+          : new URL(info.backend_url)
+      info.target_id = info.target_id || info.backend_url.host
+
+      assert(
+        info.backend_url != null,
+        'Target url not defined or target url not resolved'
+      )
+
+      info.target_method = parser.parse_method(this, req)
+      info.backend_url.protocol = parser.parse_protocol(this, req)
+
+      if (info.is_websocket_request) {
+        info.backend_url.pathname = info.backend_url.pathname.replace(
+          /\/[.]websocket$/,
+          ''
+        )
+      }
+    }
+  }
+
+  /**
    * @param {GatewayBackendParser | (gateway:Gateway, req: Request)=>string} parser
-   * @param {(req:Request, gateway:Gateway} request_filter
+   * @param {GatewayRequestFilter} request_filter
    */
   middleware(parser, request_filter = null) {
     parser = this._validate_parser(parser)
@@ -608,29 +613,43 @@ class Gateway extends events.EventEmitter {
      * @param {NextFunction} next
      */
     const run_middleware = async (req, res, next) => {
-      /**
-       * @type {GatewayRequestInfo}
-       */
-      const info = parser.parse_request(this, req, request_filter)
-
-      if (info.move_to_next) return next()
-
-      // skip if not a gateway request.
-      if (!info.is_gateway_intercept) return next()
-
-      if (info.gateway_intercept_error) {
-        this.emit('log', 'ERROR', 'Gateway internal error')
-        res.sendStatus(500)
-        return
+      let is_next_override = false
+      let next_override_result = null
+      const next_with_override = (...args) => {
+        is_next_override = true
+        next_override_result = next(...args)
+        return next_override_result
       }
 
       try {
+        const info = new GatewayRequestInfo()
+        this._parse_request_core_info(parser, info, req)
+
+        // checking the filter.
+        const is_allowed =
+          request_filter != null
+            ? request_filter(info, req, res, next_with_override) === false
+              ? false
+              : true
+            : true
+
+        if (!is_allowed || is_next_override) {
+          if (!is_next_override) return next()
+          else return next_override_result
+        }
+
+        // complete the information after the filter.
+        this._parse_request_intercept_info(parser, info, req)
+
+        // skip if not a gateway request.
+        if (!info.is_gateway_intercept) return next()
+
         // websocket/socket request do not require their own domain.
         if (info.is_websocket_request) {
           this.emit(
             'log',
             'INFO',
-            `Starting websocket proxy ${req.originalUrl} -> ${info.target_url}`
+            `Starting websocket proxy ${req.originalUrl} -> ${info.backend_url}`
           )
           this.create_websocket_proxy(req, res, next, info)
           return
@@ -666,4 +685,5 @@ module.exports = {
   encode_hostname,
   Gateway,
   GatewayRequestParser: GatewayBackendParser,
+  GatewayRequestInfo,
 }

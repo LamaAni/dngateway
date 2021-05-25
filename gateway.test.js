@@ -50,8 +50,8 @@ app.use(
       log.info('Redirect: ' + backend_url)
       return backend_url
     },
-    (req) => {
-      return req.path.startsWith('/gateway')
+    (info, req, res, next) => {
+      if (!info.is_gateway_host) return req.path.startsWith('/gateway')
     }
   )
 )
