@@ -1,6 +1,6 @@
 {
   "name": "@lamaani/dngateway",
-  "version": "0.0.3",
+  "version": "0.0.5",
   "description": "A domain name based Nodejs (express.js) gateway/proxy for exposing backend services.",
   "main": "index.js",
   "repository": {
